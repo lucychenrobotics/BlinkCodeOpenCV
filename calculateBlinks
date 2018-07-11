@@ -1,0 +1,200 @@
+import cv2
+import numpy
+from scipy import stats
+import time
+import os
+import csv
+from datetime import datetime
+
+numpy.set_printoptions(threshold=numpy.nan)
+
+
+"""    DIRECTORY INFORMATION
+-Each video file must be in a folder labels s123456_1 where 123456 is the subject num and 1 is the session
+-The file of timing information for 2bt and 3bt and 4bt must be in the folder with the code
+"""
+
+#Start time of 2 ball tracking
+startTimes = {"s123456_1": 50, "s123456_2": 75}
+
+#The part of the dir name with the subject info (s123456_1 section, count starting from 1)
+#EX: /Users/lucychen/Documents/Lab/NIHLab2/EyeBlink/Videos/s123456_1/testEye.wmv - the section with info is 8
+sectionWithInfo = 8
+
+#Filename of the csv that holds the info for when 2bt, 3bt, and 4bt starts according to dicom files
+timeFile = 'timeDataSample.csv'
+
+
+font                   = cv2.FONT_HERSHEY_SIMPLEX
+bottomLeftCornerOfText = (10,100)
+fontScale              = 2
+fontColor              = (255,255,255)
+lineType               = 2
+
+def findTime(subject, session, btNum):
+    bt2TimeSeconds = startTimes[video.split("/")[sectionWithInfo]]
+    if(btNum == 2):
+        return bt2TimeSeconds
+    else:
+        with open(timeFile) as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                #finding the subject/sess/btnum looked for
+                if(subject in row['Subject']):
+                    if(session in row['Sess']):
+                        if(str(btNum) in row["2bt"]):
+                            timeCompare = datetime.strptime(row["Time"], '%H%M%S')
+
+                #finding the base one (2bt start time)
+                if(subject in row['Subject']):
+                    if(session in row['Sess']):
+                        if("2" in row["2bt"]):
+                            timeBase = datetime.strptime(row["Time"], '%H%M%S')
+                
+        return((timeCompare-timeBase).seconds+bt2TimeSeconds)
+
+
+def findInfo(dirPath):
+    subjectInfo = dirPath.split("/")[sectionWithInfo]
+    subjectNum = subjectInfo.replace("s", "")
+    subjectSess = subjectNum.split("_")[1]
+    subjectNum = subjectNum.split("_")[0]
+    return (subjectNum, subjectSess)
+
+
+
+def getVideoFiles(dirPath):        
+    listOfVideos = []
+    for subdir, dirs, files in os.walk(dirPath):
+        for file in files:
+            if file.endswith((".avi",".mp4","wmv")):
+                listOfVideos.append(os.path.join(subdir, file))
+                #findInfo(os.path.join(subdir, file))
+
+    return listOfVideos
+
+def getBlackAverage(testFrame):
+    #average the numbers less than 50 to get the average of the black colors
+    sumBlack = 0
+    numBlack = 0
+    for i in range(testFrame.shape[0]):
+        for j in range(testFrame.shape[1]):
+            if(testFrame[i,j] < 50):
+                sumBlack += testFrame[i,j]
+                numBlack += 1
+    minThres = (sumBlack/numBlack)*testFrame.shape[0]*testFrame.shape[1]+150000
+    return minThres
+
+
+def calculateBlinks(subjectNum, subjectSess, btNum, intervalInSeconds, numIntervals):
+    #Finding where this ball tracking section starts in the eye data in seconds
+    startTime = findTime(subjectNum, subjectSess, btNum)
+    #print(startTime)
+
+    #Reading in video and getting info
+    cap = cv2.VideoCapture(video)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    length = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    cap.set(1, int(startTime*fps))
+    #print(int(startTime*fps))
+    numFramesInInterval = int(intervalInSeconds*fps)
+
+
+    #Creating the array to hold the blink num in
+    numBlinksArray = numpy.empty(int(numIntervals))
+    numBlinksArray[:] = numpy.nan
+
+    
+    #Get average of the black area since in each video its different
+    ret, frame = cap.read()
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blackScreenThres = getBlackAverage(gray)
+
+    #reset since you just read a frame
+    cap.set(1, int(startTime*fps))
+    
+    stillBlink = False
+    numFramesBlink = 0
+    #For each interval
+    for i in range(numIntervals):
+        numBlink = 0
+        overallCountBlack = 0
+        #For each frame in each interval
+        for j in range(numFramesInInterval):
+            # Capture frame-by-frame
+            ret, frame = cap.read()
+            
+            #If no frame for some reason, break out of loop
+            if ret == False:
+                break
+            
+            # Converting To Grayscale
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+           
+            #If the frame is basically a black screen, then it counts as a blink
+            if(cv2.sumElems(gray)[0] < blackScreenThres):
+                if(stillBlink == False):
+                    numFramesBlink += 1
+                    stillBlink == True
+                    overallCountBlack += 1
+            else: 
+                #43 is 1.5 seconds
+                if(numFramesBlink > 2 & numFramesBlink < 43):
+                    cv2.putText(gray, "Blink", 
+                    (10,150), 
+                    font, 
+                    fontScale,
+                    fontColor,
+                    lineType)
+
+                    numBlink += 1
+                stillBlink = False
+                numFramesBlink = 0
+
+            
+            cv2.imshow('frame',gray)
+            time.sleep(.1) 
+
+
+
+
+        if(overallCountBlack < numFramesInInterval*.2): numBlinksArray[i] = numBlink
+
+        print(numBlinksArray[i])
+
+
+
+#Loop through folders looking for videos
+listOfVideos = getVideoFiles("/Users/lucychen/Documents/Lab/NIHLab2/EyeBlink/Videos")
+
+#Loop through each video (each of which is a session for one subject)
+for video in listOfVideos:
+    print(video)
+    #Get info on the video
+    subjectNum, subjectSess = findInfo(video)
+
+    #Calculate number of blinks for the 2bt on that video
+    blinkCount2bt = calculateBlinks(subjectNum, subjectSess, 2, 60, 6)
+
+    #Calculate number of blinks for the 3bt on that video
+    blinkCount2bt = calculateBlinks(subjectNum, subjectSess, 3, 60, 6)
+
+    
+    #Calculate number of blinks for the 4bt on that video
+
+    #Save the result
+
+#Loop through folders looking for videos
+#Loop through each video
+#Get blink threshold for the video
+#Look for starting point of bt2
+#From there, get 1 minute of frames for 6 minutes
+#Calculate number of blinks in each minute
+#Save the number of blinks for those 6 minutes as the folder name
+#Move to 3bt and do the same thing
+#Move to 4bt and do the same thing
+
+
+#notes, the folder names will have to be the same as the name in the dictionary
+
+
